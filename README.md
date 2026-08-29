@@ -10,6 +10,11 @@ Actions — no server needed.
 
 ## 有什么不同 / What changed
 
+- **修复 CSRF 校验失败**（这是原版现在真正跑挂的原因）：登录前先 `GET /auth/login`
+  拿到 `PHPSESSID` 和隐藏字段 `csrf_token` 再一起提交 —— 原版直接 POST 会被拒：
+  `CSRF Token 验证失败, 请尝试刷新页面或更换浏览器`。
+  *Fix the CSRF failure* (the actual reason the original fails today): fetch the
+  login page first to get `PHPSESSID` + the hidden `csrf_token`, then submit both.
 - **修复被拦截**：带上真实浏览器 `User-Agent` 等请求头 —— 原版裸 `python-requests`
   UA 常被机场/Cloudflare 403 或返回 HTML，导致 `.json()` 直接崩。
   *Fix "blocked" failures*: sends real browser headers; the original bare

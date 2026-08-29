@@ -88,11 +88,26 @@ class CordCloud:
             raise RuntimeError(
                 f"{path} 返回非 JSON (HTTP {r.status_code})，可能被 WAF/Cloudflare 拦截或域名已失效")
 
+    def _csrf_token(self) -> str:
+        # CordCloud/SSPanel now guards login with a session-bound CSRF token:
+        # GET the login page first to obtain the PHPSESSID cookie plus a hidden
+        # <input name="csrf_token" value="..."> that must be echoed on POST.
+        # Skipping this is what makes a bare POST fail with
+        # "CSRF Token 验证失败, 请尝试刷新页面或更换浏览器".
+        r = self.session.get(self._url("auth/login"), timeout=self.timeout, verify=False)
+        tag = re.search(r'<input[^>]*name=["\']csrf_token["\'][^>]*>', r.text, re.I)
+        if tag:
+            val = re.search(r'value=["\']([^"\']+)["\']', tag.group(0))
+            if val:
+                return val.group(1)
+        return ""
+
     def login(self) -> dict:
         return self._post_json("auth/login", {
             "email": self.email,
             "passwd": self.passwd,
             "code": self.code,
+            "csrf_token": self._csrf_token(),
         })
 
     def check_in(self) -> dict:
