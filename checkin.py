@@ -15,6 +15,9 @@ Env vars:
   CC_SECRET  (optional)  两步验证 TOTP 密钥 / 2-step TOTP secret
   CC_HOST    (optional)  逗号分隔的域名列表 / comma-separated hosts
 """
+import base64
+import hashlib
+import json
 import os
 import re
 import sys
@@ -102,13 +105,45 @@ class CordCloud:
                 return val.group(1)
         return ""
 
+    def _altcha_payload(self) -> str:
+        # CordCloud protects login with ALTCHA — a self-hosted proof-of-work
+        # captcha (not a human-interaction one). The browser widget auto-solves
+        # it on load; we do the same: fetch the signed challenge, brute-force the
+        # number n where SHA-256(salt + n) == challenge, then base64-encode the
+        # solution as the `altcha` form field. Skipping it => login is rejected
+        # with "系统无法接受您的验证结果". (This is legitimate: the PoW is meant
+        # to be computed by the client.)
+        r = self.session.get(self._url("auth/altcha/challenge"), timeout=self.timeout, verify=False)
+        try:
+            c = r.json()
+        except ValueError:
+            return ""  # ALTCHA not enabled on this host
+        algo = c.get("algorithm", "SHA-256").replace("-", "").lower()
+        salt, target = c["salt"], c["challenge"]
+        maxnum = int(c.get("maxnumber", c.get("maxNumber", 1_000_000)))
+        for n in range(maxnum + 1):
+            if hashlib.new(algo, f"{salt}{n}".encode()).hexdigest() == target:
+                solution = {
+                    "algorithm": c["algorithm"],
+                    "challenge": target,
+                    "number": n,
+                    "salt": salt,
+                    "signature": c["signature"],
+                }
+                return base64.b64encode(json.dumps(solution).encode()).decode()
+        return ""
+
     def login(self) -> dict:
-        return self._post_json("auth/login", {
+        data = {
             "email": self.email,
             "passwd": self.passwd,
             "code": self.code,
             "csrf_token": self._csrf_token(),
-        })
+        }
+        altcha = self._altcha_payload()
+        if altcha:
+            data["altcha"] = altcha
+        return self._post_json("auth/login", data)
 
     def check_in(self) -> dict:
         return self._post_json("user/checkin")

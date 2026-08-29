@@ -10,6 +10,11 @@ Actions — no server needed.
 
 ## 有什么不同 / What changed
 
+- **过 ALTCHA 人机验证**：CordCloud 登录用了 [ALTCHA](https://altcha.org)（自托管的
+  **工作量证明** 验证，非人机交互式）。脚本像浏览器一样自动求解 PoW
+  （`SHA-256(salt+n)==challenge`）再随登录提交，绕过 `系统无法接受您的验证结果`。
+  *Solve the ALTCHA proof-of-work* the same way the browser widget does — no
+  human interaction and no third-party solver needed.
 - **修复 CSRF 校验失败**（这是原版现在真正跑挂的原因）：登录前先 `GET /auth/login`
   拿到 `PHPSESSID` 和隐藏字段 `csrf_token` 再一起提交 —— 原版直接 POST 会被拒：
   `CSRF Token 验证失败, 请尝试刷新页面或更换浏览器`。
