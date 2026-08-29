@@ -33,7 +33,7 @@ except ImportError:  # pyotp only needed when a TOTP secret is set
 
 urllib3.disable_warnings()
 
-DEFAULT_HOSTS = "cordcloud.us,cordcloud.one,cordcloud.biz,c-cloud.xyz,cordc.net"
+DEFAULT_HOSTS = "cordcloud.us,cordcloud.one,cordcloud.biz,cordc.net"
 # A realistic browser UA — many panels / Cloudflare reject the default
 # python-requests UA with a 403 or an HTML challenge page (which then breaks
 # .json()). This header is the single most common reason check-in bots fail.
