@@ -163,7 +163,73 @@ class CordCloud:
         return ()
 
 
+def _load_cookie() -> str:
+    # Cookie string comes either inline (CC_COOKIE) or from a file (CC_COOKIE_FILE,
+    # written by the one-time login helper and refreshed after each run).
+    ck = os.environ.get("CC_COOKIE", "").strip()
+    if ck:
+        return ck
+    path = os.environ.get("CC_COOKIE_FILE", "").strip()
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    return ""
+
+
+def _save_cookie(cc: "CordCloud") -> None:
+    path = os.environ.get("CC_COOKIE_FILE", "").strip()
+    if not path:
+        return
+    pairs = "; ".join(f"{c.name}={c.value}" for c in cc.session.cookies)
+    if pairs:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(pairs)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def run_cookie(cookie: str) -> int:
+    # Reuse an existing logged-in session — no login, so no captcha / no
+    # unfamiliar-device email. The session is IP-bound (SSPanel `key`/`ip`
+    # cookies), so this must run from the same IP the cookie was created on.
+    host = (os.environ.get("CC_HOST", "").strip().split(",")[0].strip() or "cordc.net")
+    cc = CordCloud("", "", host=host)
+    for part in cookie.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            cc.session.cookies.set(k, v, domain=cc.host)
+    # Are we actually logged in? A guest gets 302 -> /auth/login.
+    r = cc.session.get(cc._url("user"), timeout=cc.timeout, verify=False, allow_redirects=False)
+    if r.status_code != 200:
+        error(f"cookie 已失效(GET /user -> {r.status_code})，请在本机重跑一次登录助手刷新 cookie")
+        return 2
+    try:
+        res = cc.check_in()
+    except Exception as e:  # noqa: BLE001
+        error(f"签到异常：{e}")
+        return 1
+    msg = res.get("msg", "")
+    if res.get("ret") != 1 and "您似乎已经签到过" not in msg:
+        warning(f"签到失败：{msg}")
+        _save_cookie(cc)
+        return 1
+    info(f"签到结果：{msg}")
+    t = cc.traffic()
+    if t:
+        info(f"流量：今日已用 {t[0]}, 过去已用 {t[1]}, 剩余 {t[2]}")
+    _save_cookie(cc)  # persist any refreshed cookies (sliding session)
+    info("CordCloud 签到成功结束 ✅（cookie 模式）")
+    return 0
+
+
 def run() -> int:
+    cookie = _load_cookie()
+    if cookie:
+        return run_cookie(cookie)
+
     email = os.environ.get("CC_EMAIL", "").strip()
     passwd = os.environ.get("CC_PASSWD", "").strip()
     secret = os.environ.get("CC_SECRET", "").strip()

@@ -2,36 +2,25 @@ name: CordCloud Check-in
 
 on:
   schedule:
-    # 每天 UTC 01:00 = 北京时间 09:00 / daily 09:00 Asia/Shanghai
+    # 每天 UTC 01:00 = 北京时间 09:00
     - cron: "0 1 * * *"
   workflow_dispatch:
 
-# 避免并发重复运行 / avoid overlapping runs
 concurrency:
   group: cordcloud-checkin
   cancel-in-progress: false
 
 jobs:
   checkin:
-    runs-on: ubuntu-latest
+    # 跑在本机 self-hosted runner（固定 IP，cookie 才有效）
+    runs-on: [self-hosted, cordc-sg]
     timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install deps
-        run: pip install -r requirements.txt
-
-      - name: Run check-in
+      - name: Run check-in (cookie mode)
         env:
-          CC_EMAIL: ${{ secrets.CC_EMAIL }}
-          CC_PASSWD: ${{ secrets.CC_PASSWD }}
-          CC_SECRET: ${{ secrets.CC_SECRET }}   # optional (2FA TOTP)
-          CC_HOST: ${{ secrets.CC_HOST }}       # optional (comma-separated)
-        run: python checkin.py
+          # 持久 cookie 文件（由一次性登录助手写入，之后自动刷新续期）
+          CC_COOKIE_FILE: /home/ubuntu/.config/cordc/cookie.txt
+          CC_HOST: cordc.net
+        run: python3 checkin.py
