@@ -35,6 +35,20 @@ Actions — no server needed.
 - 非 JSON 响应给出清晰报错；错误正确走 GitHub Actions 注解。
   Clear errors on non-JSON responses; proper GitHub Actions annotations.
 
+## 全自动、无需邮件（self-hosted runner）
+
+CordCloud 现在的登录有三道关：CSRF、ALTCHA 工作量证明、**陌生设备二步验证**。
+前两道脚本自动过；第三道 CordCloud 同时支持邮箱码和 **Google Authenticator (GA/TOTP)**，
+本脚本**用 GA 自动应答**，所以**永远不需要邮箱验证码**。
+
+由于 SSPanel 把会话绑定到登录时的 IP，必须跑在**固定 IP** 的机器上（self-hosted runner）：
+
+- 日常：**cookie 模式**复用会话直接签到（`CC_COOKIE_FILE`），零登录、零邮件；
+- cookie 失效时：自动回退**登录模式**（`CC_EMAIL`/`CC_PASSWD`/`CC_SECRET`，GA 自动过二步验证），仍无需邮件；
+- 每次成功都会把刷新后的 cookie 存回文件（滑动续期）。
+
+凭据放在 runner 本机的 `~/.config/cordc/creds.env`（权限 600，**不进仓库**）；仓库里零硬编码。
+
 ## 怎么用 / Setup
 
 1. **Fork / 使用这个仓库**（保持 private 也行，Actions 一样能跑）。

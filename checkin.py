@@ -26,12 +26,20 @@ from datetime import datetime, timedelta, timezone
 import requests
 import urllib3
 
-try:
-    import pyotp
-except ImportError:  # pyotp only needed when a TOTP secret is set
-    pyotp = None
-
 urllib3.disable_warnings()
+
+
+def _totp(secret: str, digits: int = 6, period: int = 30) -> str:
+    """RFC-6238 TOTP (SHA1, 6 digits, 30s) — stdlib only, no pyotp needed."""
+    import hashlib
+    import hmac
+    import struct
+    import time
+    s = secret.strip().upper().replace(" ", "")
+    key = base64.b32decode(s + "=" * ((8 - len(s) % 8) % 8))
+    digest = hmac.new(key, struct.pack(">Q", int(time.time()) // period), hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    return str((struct.unpack(">I", digest[off:off + 4])[0] & 0x7FFFFFFF) % (10 ** digits)).zfill(digits)
 
 DEFAULT_HOSTS = "cordcloud.us,cordcloud.one,cordcloud.biz,cordc.net"
 # A realistic browser UA — many panels / Cloudflare reject the default
@@ -145,6 +153,15 @@ class CordCloud:
             data["altcha"] = altcha
         return self._post_json("auth/login", data)
 
+    def device_2fa_ga(self, token: str, code: str) -> dict:
+        # SSPanel guards a new-device login with a second factor and offers both
+        # email and Google-Authenticator (GA/TOTP). We answer with GA so no email
+        # code is ever needed — a fresh TOTP here completes the login headlessly.
+        self.session.get(self._url(f"auth/login/2fa?token={token}"),
+                         timeout=self.timeout, verify=False)
+        return self._post_json("auth/login/2fa/verify",
+                               {"token": token, "code": code, "method": "ga"})
+
     def check_in(self) -> dict:
         return self._post_json("user/checkin")
 
@@ -155,11 +172,19 @@ class CordCloud:
         # regexes below can match.
         r.encoding = r.apparent_encoding or "utf-8"
         html = r.text
-        today = re.search(r'今日已用</span>.*?<code[^>]*>(.*?)</code>', html, re.S)
-        past = re.search(r'过去已用</span>.*?<code[^>]*>(.*?)</code>', html, re.S)
-        rest = re.search(r'剩余流量</span>.*?<code[^>]*>(.*?)</code>', html, re.S)
-        if today and past and rest:
-            return today.group(1).strip(), past.group(1).strip(), rest.group(1).strip()
+        # Tie the match to the very next <code> after the label (no cross-element
+        # spill), and only accept values that actually look like traffic — panel
+        # themes vary and a loose match can grab an unrelated <code> (e.g. the
+        # node password).
+        def grab(label):
+            m = re.search(label + r'\s*</span>\s*<code[^>]*>(.*?)</code>', html, re.S)
+            return m.group(1).strip() if m else None
+        today, past, rest = grab('今日已用'), grab('过去已用'), grab('剩余流量')
+        looks_like_traffic = lambda v: bool(v) and bool(re.search(r'\d', v)) and \
+            bool(re.search(r'(?i)([KMGTP]?i?B|%|∞|无限|unlimited)', v))
+        vals = (today, past, rest)
+        if all(looks_like_traffic(v) for v in vals):
+            return vals
         return ()
 
 
@@ -228,7 +253,10 @@ def run_cookie(cookie: str) -> int:
 def run() -> int:
     cookie = _load_cookie()
     if cookie:
-        return run_cookie(cookie)
+        rc = run_cookie(cookie)
+        if rc != 2:  # 2 = cookie expired → fall through to a fresh login
+            return rc
+        info("cookie 失效，回退登录模式(GA 自动过设备二步验证)")
 
     email = os.environ.get("CC_EMAIL", "").strip()
     passwd = os.environ.get("CC_PASSWD", "").strip()
@@ -239,12 +267,7 @@ def run() -> int:
         error("缺少 CC_EMAIL / CC_PASSWD（请在仓库 Settings → Secrets 中配置）")
         return 1
 
-    code = ""
-    if secret:
-        if pyotp is None:
-            error("设置了 CC_SECRET 但未安装 pyotp")
-            return 1
-        code = pyotp.TOTP(secret).now()
+    code = _totp(secret) if secret else ""
 
     hosts = [h.strip() for h in host_input.split(",") if h.strip()]
     info(f"将依次尝试 {len(hosts)} 个 host")
@@ -254,6 +277,20 @@ def run() -> int:
         cc = CordCloud(email, passwd, code=code, host=h)
         try:
             res = cc.login()
+            # New-device second factor — answer it with GA (TOTP), never email.
+            if res.get("ret") == 2 and res.get("need_device_2fa"):
+                token = res.get("token")
+                if token and secret:
+                    v = cc.device_2fa_ga(token, _totp(secret))
+                    if v.get("ret") == 1:
+                        info("设备二步验证(GA)通过")
+                        res = {"ret": 1, "msg": v.get("msg", "")}
+                    else:
+                        warning(f"设备二步验证失败：{v.get('msg', '')}，尝试下一个 host")
+                        continue
+                else:
+                    warning("需要设备二步验证但未提供 CC_SECRET(TOTP)，尝试下一个 host")
+                    continue
             if res.get("ret") != 1:
                 warning(f"登录失败：{res.get('msg', '未知错误')}，尝试下一个 host")
                 continue
@@ -275,6 +312,7 @@ def run() -> int:
                 info(f"流量：今日已用 {traffic['todayUsedTraffic']}, "
                      f"过去已用 {traffic['lastUsedTraffic']}, 剩余 {traffic['unUsedTraffic']}")
 
+            _save_cookie(cc)  # persist the fresh session for next-run cookie mode
             info("CordCloud 签到成功结束 ✅")
             return 0
         except Exception as e:  # noqa: BLE001 — try the next host on any error
